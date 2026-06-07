@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="es" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RestaControl | Pantalla de Cocina</title>
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <link th:href="@{/css/styles.css}" rel="stylesheet">
+</head>
+
+<body class="admin-body">
+
+<div th:replace="fragments/sidebar :: sidebar"></div>
+
+<div class="main-wrapper">
+    <header class="topbar">
+        <button class="btn btn-icon" id="sidebarToggle">
+            <i class="bi bi-list" style="font-size:1.3rem;"></i>
+        </button>
+
+        <nav aria-label="breadcrumb" class="ms-2 d-none d-sm-block">
+            <ol class="breadcrumb mb-0">
+                <li class="breadcrumb-item"><a th:href="@{/dashboard}">Inicio</a></li>
+                <li class="breadcrumb-item active">Cocina</li>
+            </ol>
+        </nav>
+
+        <div class="topbar-right ms-auto d-flex align-items-center gap-3">
+            <span class="topbar-date" id="topbarDate"></span>
+
+            <div class="dropdown">
+                <button class="btn btn-icon" data-bs-toggle="dropdown">
+                    <i class="bi bi-person-circle" style="font-size:1.4rem;color:#7a8898;"></i>
+                </button>
+
+                <ul class="dropdown-menu dropdown-menu-end shadow-sm border-0">
+                    <li>
+                        <div class="d-flex align-items-center gap-2 px-3 py-2">
+                            <div class="user-avatar" style="width:36px;height:36px;flex-shrink:0;">
+                                <i class="bi bi-person-fill"></i>
+                            </div>
+                            <div>
+                                <div class="fw-semibold small" id="headerUserName">Administrador</div>
+                                <div class="text-muted" style="font-size:.75rem;" id="headerUserRole">Sistema Activo</div>
+                            </div>
+                        </div>
+                    </li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li>
+                        <a class="dropdown-item text-danger" href="#" onclick="event.preventDefault();Auth.logout()">
+                            <i class="bi bi-box-arrow-right me-2"></i>Cerrar sesión
+                        </a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </header>
+
+    <main class="page-content kitchen-page">
+        <div class="page-header">
+            <div>
+                <h1 class="page-title">
+                    <i class="bi bi-fire"></i>Pantalla de Cocina
+                </h1>
+                <p class="page-desc">
+                    Listado de platos por preparar y estado de cada pedido enviado por salón.
+                </p>
+            </div>
+
+            <a th:href="@{/cocina}" class="btn btn-brand">
+                <i class="bi bi-arrow-clockwise"></i>Actualizar
+            </a>
+        </div>
+
+        <div class="kitchen-summary">
+            <article class="kpi-card kpi-total">
+                <p class="kpi-label">Ítems en cocina</p>
+                <p class="kpi-value" th:text="${totalItems}">0</p>
+            </article>
+
+            <article class="kpi-card kpi-pending">
+                <p class="kpi-label">Pendientes</p>
+                <p class="kpi-value" th:text="${totalPendientes}">0</p>
+            </article>
+
+            <article class="kpi-card kpi-canceled">
+                <p class="kpi-label">Cancelados</p>
+                <p class="kpi-value" th:text="${totalCancelados}">0</p>
+            </article>
+
+            <article class="kpi-card kpi-ready">
+                <p class="kpi-label">Listos para entrega</p>
+                <p class="kpi-value" th:text="${totalListos}">0</p>
+            </article>
+
+            <article class="kpi-card" style="background:#e0f2fe;border-left:4px solid #0ea5e9;">
+                <p class="kpi-label" style="color:#0369a1;">Entregados</p>
+                <p class="kpi-value" style="color:#0369a1;" th:text="${totalEntregados}">0</p>
+            </article>
+        </div>
+
+        <div class="content-card">
+            <div class="row g-3 mb-4 align-items-end">
+                <div class="col-md-5">
+                    <div class="input-group">
+                        <span class="input-group-text bg-white border-end-0">
+                            <i class="bi bi-search text-muted"></i>
+                        </span>
+                        <input type="text" class="form-control border-start-0" placeholder="Buscar por plato, mesa o pedido...">
+                    </div>
+                </div>
+
+                <div class="col-md-3">
+                    <select class="form-select">
+                        <option>Todos los estados</option>
+                        <option>Pendiente</option>
+                        <option>Cancelado</option>
+                        <option>Listo para entrega</option>
+                        <option>Entregado</option>
+                    </select>
+                </div>
+
+                <div class="col-md-4 text-md-end">
+                    <span class="badge-pill bp-info">
+                        <i class="bi bi-display"></i>Vista para pantalla de cocina
+                    </span>
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table table-hover align-middle kitchen-table">
+                    <thead>
+                    <tr>
+                        <th>Pedido</th>
+                        <th>Mesa</th>
+                        <th>Plato a preparar</th>
+                        <th class="text-center">Cant.</th>
+                        <th>Hora envío</th>
+                        <th>Estado</th>
+                        <th class="text-end">Control</th>
+                    </tr>
+                    </thead>
+
+                    <tbody>
+                    <tr th:each="item : ${itemsCocina}">
+                        <td>
+                            <span class="record-id" th:text="'#' + ${item.pedido}">#1</span>
+                        </td>
+
+                        <td>
+                            <span class="badge bg-light text-dark" th:text="${item.mesa}">M-01</span>
+                        </td>
+
+                        <td>
+                            <span class="fw-semibold" th:text="${item.plato}">Lomo saltado</span>
+                        </td>
+
+                        <td class="text-center" th:text="${item.cantidad}">2</td>
+
+                        <td th:text="${item.horaEnvio}">09/04/2026 08:10 p. m.</td>
+
+                        <td>
+                            <span th:if="${item.estado == 'Pendiente'}" class="badge-pill bp-warning">
+                                <i class="bi bi-clock-fill"></i>Pendiente
+                            </span>
+
+                            <span th:if="${item.estado == 'Cancelado'}" class="badge-pill bp-danger">
+                                <i class="bi bi-x-circle-fill"></i>Cancelado
+                            </span>
+
+                            <span th:if="${item.estado == 'Listo para entrega'}" class="badge-pill bp-success">
+                                <i class="bi bi-check-circle-fill"></i>Listo para entrega
+                            </span>
+
+                            <span th:if="${item.estado == 'Entregado'}" class="badge-pill bp-info">
+                                <i class="bi bi-bag-check-fill"></i>Entregado
+                            </span>
+                        </td>
+
+                        <td class="text-end">
+                            <div class="action-buttons">
+                                <button class="btn-tbl" title="Pendiente">
+                                    <i class="bi bi-clock text-warning"></i>
+                                </button>
+
+                                <button class="btn-tbl" title="Listo para entrega">
+                                    <i class="bi bi-check2-circle text-success"></i>
+                                </button>
+
+                                <button class="btn-tbl" title="Entregado">
+                                    <i class="bi bi-bag-check text-primary"></i>
+                                </button>
+
+                                <button class="btn-tbl" title="Cancelar">
+                                    <i class="bi bi-x-circle text-danger"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="table-footer">
+                <span class="table-count">
+                    Mostrando <span th:text="${itemsCocina.size()}">0</span> ítems
+                </span>
+            </div>
+        </div>
+    </main>
+
+    <footer class="admin-footer">
+        <span>&copy; 2026 RestaControl &mdash; Sistema de Gestión de Restaurante</span>
+        <span>Universidad Tecnológica del Perú </span>
+    </footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script th:src="@{/js/auth.js}"></script>
+<script th:src="@{/js/layout.js}"></script>
+
+<script>
+    Layout.init('cocina');
+</script>
+
+</body>
+</html>
