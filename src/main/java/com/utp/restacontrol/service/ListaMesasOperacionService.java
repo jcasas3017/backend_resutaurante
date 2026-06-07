@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.HashMap;
@@ -102,6 +103,12 @@ public class ListaMesasOperacionService {
                     item.put("reservaActiva", buildReservaActiva(rs, idReserva));
                     item.put("atencionActiva", buildAtencionActiva(rs, idAtencion));
                     item.put("totalActual", rs.getDouble("total_actual"));
+                    Timestamp reservaTs = rs.getTimestamp("reserva_fecha_hora");
+                    Map<String, Object> margen = calcularMargen(idReserva, reservaTs != null ? reservaTs.toLocalDateTime() : null, ref);
+                    item.put("bloqueadaPorMargen", margen.get("bloqueadaPorMargen"));
+                    item.put("proximaOcupacionEn", margen.get("proximaOcupacionEn"));
+                    item.put("minutosParaOcupacion", margen.get("minutosParaOcupacion"));
+                    item.put("motivoBloqueo", margen.get("motivoBloqueo"));
                     return item;
                 },
                 Timestamp.valueOf(ref),
@@ -199,12 +206,25 @@ public class ListaMesasOperacionService {
             pedidoActual = construirPedidoActual(idAtencion);
         }
 
-        return Map.of(
-                "mesa", mesa,
-                "reservaActiva", reservaActiva,
-                "atencionActiva", atencionActiva,
-                "pedidoActual", pedidoActual
-        );
+        boolean activa = Boolean.TRUE.equals(mesa.get("activa"));
+        String situacion = text((String) mesa.get("situacion"));
+        String estadoOperativo = calcularEstadoOperativo(activa, situacion, atencionActiva != null, reservaActiva != null);
+
+        LocalDateTime reservaFechaHoraCtx = reservaActiva != null ? (LocalDateTime) reservaActiva.get("fechaHora") : null;
+        UUID idReservaCtx = reservaActiva != null ? (UUID) reservaActiva.get("idReserva") : null;
+        Map<String, Object> margenCtx = calcularMargen(idReservaCtx, reservaFechaHoraCtx, ref);
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("mesa", mesa);
+        result.put("estadoOperativo", estadoOperativo);
+        result.put("bloqueadaPorMargen", margenCtx.get("bloqueadaPorMargen"));
+        result.put("proximaOcupacionEn", margenCtx.get("proximaOcupacionEn"));
+        result.put("minutosParaOcupacion", margenCtx.get("minutosParaOcupacion"));
+        result.put("motivoBloqueo", margenCtx.get("motivoBloqueo"));
+        result.put("reservaActiva", reservaActiva);
+        result.put("atencionActiva", atencionActiva);
+        result.put("pedidoActual", pedidoActual);
+        return result;
     }
 
     @Transactional
@@ -249,6 +269,26 @@ public class ListaMesasOperacionService {
 
         if (abiertas != null && abiertas > 0) {
             throw new OperacionBusinessException("Mesa ya ocupada", "MESA_OCUPADA");
+        }
+
+        Integer reservaEnMargen = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(1)
+                FROM reservas
+                WHERE id_mesa = ?::uuid
+                  AND estado::text IN ('pendiente', 'confirmada')
+                  AND fecha_hora BETWEEN (?::timestamp - INTERVAL '1 hour') AND (?::timestamp + INTERVAL '30 minutes')
+                  AND (?::uuid IS NULL OR id != ?::uuid)
+                """,
+                Integer.class,
+                idMesa,
+                Timestamp.valueOf(LocalDateTime.now(LIMA_ZONE)),
+                Timestamp.valueOf(LocalDateTime.now(LIMA_ZONE)),
+                idReserva,
+                idReserva
+        );
+        if (reservaEnMargen != null && reservaEnMargen > 0) {
+            throw new OperacionBusinessException("Mesa bloqueada por margen de reserva (30 min antes / 1 hora despues)", "MESA_BLOQUEADA_MARGEN");
         }
 
         if (idReserva != null) {
@@ -759,6 +799,25 @@ public class ListaMesasOperacionService {
         item.setCantidad(request.getCantidad());
         item.setObservaciones(request.getObservaciones());
         return item;
+    }
+
+    private Map<String, Object> calcularMargen(UUID idReserva, LocalDateTime fechaReserva, LocalDateTime ref) {
+        Map<String, Object> result = new HashMap<>();
+        if (idReserva == null || fechaReserva == null) {
+            result.put("bloqueadaPorMargen", false);
+            result.put("proximaOcupacionEn", null);
+            result.put("minutosParaOcupacion", null);
+            result.put("motivoBloqueo", null);
+            return result;
+        }
+        long minutos = Duration.between(ref, fechaReserva).toMinutes();
+        // antes (reserva futura): 30 min | despues (reserva pasada): 60 min
+        boolean bloqueada = (minutos >= 0 && minutos <= 30) || (minutos < 0 && minutos >= -60);
+        result.put("bloqueadaPorMargen", bloqueada);
+        result.put("proximaOcupacionEn", bloqueada ? fechaReserva : null);
+        result.put("minutosParaOcupacion", bloqueada ? (int) minutos : null);
+        result.put("motivoBloqueo", bloqueada ? (minutos >= 0 ? "margen_antes" : "margen_despues") : null);
+        return result;
     }
 
     private String text(String value) {

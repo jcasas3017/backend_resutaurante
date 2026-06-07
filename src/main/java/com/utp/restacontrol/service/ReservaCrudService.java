@@ -16,6 +16,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import org.apache.poi.ss.usermodel.Cell;
@@ -30,6 +31,7 @@ import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
 import java.io.IOException;
+import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
@@ -46,15 +48,18 @@ public class ReservaCrudService {
     private final ReservaRepository reservaRepository;
     private final ClienteRepository clienteRepository;
     private final MesaRepository mesaRepository;
+    private final JdbcTemplate jdbcTemplate;
 
     public ReservaCrudService(
             ReservaRepository reservaRepository,
             ClienteRepository clienteRepository,
-            MesaRepository mesaRepository
+            MesaRepository mesaRepository,
+            JdbcTemplate jdbcTemplate
     ) {
         this.reservaRepository = reservaRepository;
         this.clienteRepository = clienteRepository;
         this.mesaRepository = mesaRepository;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     public Page<ReservaDto> listar(
@@ -183,6 +188,7 @@ public class ReservaCrudService {
                 request.getCantidadPersonas(),
                 request.getEstado()
         );
+        validarCruceHorario(request.getIdMesa(), request.getFechaHora(), null);
     }
 
     private void validarActualizar(UUID id, ReservaUpdateRequest request) {
@@ -199,6 +205,7 @@ public class ReservaCrudService {
                 request.getCantidadPersonas(),
                 request.getEstado()
         );
+        validarCruceHorario(request.getIdMesa(), request.getFechaHora(), id);
     }
 
     private void validarCamposBase(
@@ -246,6 +253,34 @@ public class ReservaCrudService {
             }
         }
         throw new IllegalArgumentException("Estado de reserva no valido. Usa: pendiente, confirmada, cancelada, atendida");
+    }
+
+    private void validarCruceHorario(UUID idMesa, LocalDateTime fechaHora, UUID idReservaExcluir) {
+        if (idMesa == null || fechaHora == null) {
+            return;
+        }
+        Integer cruces = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(1)
+                FROM reservas
+                WHERE id_mesa = ?::uuid
+                  AND estado::text IN ('pendiente', 'confirmada')
+                  AND fecha_hora BETWEEN (?::timestamp - INTERVAL '60 minutes') AND (?::timestamp + INTERVAL '30 minutes')
+                  AND (?::uuid IS NULL OR id != ?::uuid)
+                """,
+                Integer.class,
+                idMesa,
+                Timestamp.valueOf(fechaHora),
+                Timestamp.valueOf(fechaHora),
+                idReservaExcluir,
+                idReservaExcluir
+        );
+        if (cruces != null && cruces > 0) {
+            throw new OperacionBusinessException(
+                    "La mesa ya tiene una reserva en ese horario (margen: 30 min antes / 1 hora despues)",
+                    "RESERVA_CRUCE_HORARIO"
+            );
+        }
     }
 
     private String normalizeEstado(String value) {

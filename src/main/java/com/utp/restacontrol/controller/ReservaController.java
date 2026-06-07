@@ -5,6 +5,7 @@ import com.utp.restacontrol.dto.reserva.ReservaEstadoRequest;
 import com.utp.restacontrol.dto.reserva.ReservaSituacionRequest;
 import com.utp.restacontrol.dto.reserva.ReservaUpdateRequest;
 import com.utp.restacontrol.model.EstadoReserva;
+import com.utp.restacontrol.service.OperacionBusinessException;
 import com.utp.restacontrol.service.ReservaCrudService;
 import org.springframework.data.domain.Page;
 import org.springframework.http.HttpStatus;
@@ -110,6 +111,8 @@ public class ReservaController {
                     "message", "Reserva creada",
                     "data", reservaCrudService.crear(request)
             ));
+        } catch (OperacionBusinessException ex) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(errorConCodigo(ex.getMessage(), ex.getCode()));
         } catch (IllegalArgumentException ex) {
             return ResponseEntity.badRequest().body(error(ex.getMessage()));
         }
@@ -123,6 +126,8 @@ public class ReservaController {
                     "message", "Reserva actualizada",
                     "data", reservaCrudService.actualizar(id, request)
             ));
+        } catch (OperacionBusinessException ex) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(errorConCodigo(ex.getMessage(), ex.getCode()));
         } catch (IllegalArgumentException ex) {
             if ("Reserva no encontrada".equals(ex.getMessage())) {
                 return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error(ex.getMessage()));
@@ -191,6 +196,14 @@ public class ReservaController {
         return Map.of(
                 "success", false,
                 "message", message
+        );
+    }
+
+    private Map<String, Object> errorConCodigo(String message, String codigo) {
+        return Map.of(
+                "success", false,
+                "message", message,
+                "codigo", codigo
         );
     }
 }
