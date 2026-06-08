@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface ClienteRepository extends JpaRepository<Cliente, UUID> {
@@ -17,6 +18,8 @@ public interface ClienteRepository extends JpaRepository<Cliente, UUID> {
     boolean existsByDocumento(String documento);
 
     boolean existsByDocumentoAndIdNot(String documento, UUID id);
+
+    Optional<Cliente> findByDocumento(String documento);
 
     boolean existsByEmailIgnoreCase(String email);
 

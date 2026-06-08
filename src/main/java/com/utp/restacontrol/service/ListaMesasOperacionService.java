@@ -1,6 +1,7 @@
 package com.utp.restacontrol.service;
 
 import com.utp.restacontrol.dto.operacion.AgregarItemRequest;
+import com.utp.restacontrol.dto.operacion.AtencionSituacionRequest;
 import com.utp.restacontrol.dto.operacion.CambiarEstadoItemRequest;
 import com.utp.restacontrol.dto.operacion.CobrarAtencionRequest;
 import com.utp.restacontrol.dto.operacion.OcuparMesaRequest;
@@ -271,22 +272,39 @@ public class ListaMesasOperacionService {
             throw new OperacionBusinessException("Mesa ya ocupada", "MESA_OCUPADA");
         }
 
-        Integer reservaEnMargen = jdbcTemplate.queryForObject(
+        LocalDateTime ahora = LocalDateTime.now(LIMA_ZONE);
+        Integer reservaEnMargen;
+        if (idReserva == null) {
+            reservaEnMargen = jdbcTemplate.queryForObject(
                 """
                 SELECT COUNT(1)
                 FROM reservas
                 WHERE id_mesa = ?::uuid
                   AND estado::text IN ('pendiente', 'confirmada')
                   AND fecha_hora BETWEEN (?::timestamp - INTERVAL '1 hour') AND (?::timestamp + INTERVAL '30 minutes')
-                  AND (?::uuid IS NULL OR id != ?::uuid)
                 """,
                 Integer.class,
                 idMesa,
-                Timestamp.valueOf(LocalDateTime.now(LIMA_ZONE)),
-                Timestamp.valueOf(LocalDateTime.now(LIMA_ZONE)),
-                idReserva,
+                Timestamp.valueOf(ahora),
+                Timestamp.valueOf(ahora)
+            );
+        } else {
+            reservaEnMargen = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(1)
+                FROM reservas
+                WHERE id_mesa = ?::uuid
+                  AND estado::text IN ('pendiente', 'confirmada')
+                  AND fecha_hora BETWEEN (?::timestamp - INTERVAL '1 hour') AND (?::timestamp + INTERVAL '30 minutes')
+                  AND id != ?::uuid
+                """,
+                Integer.class,
+                idMesa,
+                Timestamp.valueOf(ahora),
+                Timestamp.valueOf(ahora),
                 idReserva
-        );
+            );
+        }
         if (reservaEnMargen != null && reservaEnMargen > 0) {
             throw new OperacionBusinessException("Mesa bloqueada por margen de reserva (30 min antes / 1 hora despues)", "MESA_BLOQUEADA_MARGEN");
         }
@@ -310,17 +328,18 @@ public class ListaMesasOperacionService {
         }
 
         UUID idAtencion = insertarAtencion(idMesa, idReserva, request);
-        UUID idPedido = insertarPedido(idAtencion, request.getNotas());
-
-        for (OperacionItemRequest item : request.getItems()) {
-            insertarDetalleItem(idPedido, item, request.getIdMozo());
+        if (request.getItems() != null && !request.getItems().isEmpty()) {
+            UUID idPedido = insertarPedido(idAtencion, request.getNotas(), request.getIdMozo());
+            for (OperacionItemRequest item : request.getItems()) {
+                insertarDetalleItem(idPedido, item, request.getIdMozo());
+            }
         }
 
         if (idReserva != null) {
             jdbcTemplate.update(
                     """
                     UPDATE reservas
-                    SET estado = 'confirmada'::estado_reserva,
+                    SET estado = 'confirmada',
                         confirmada = true
                     WHERE id = ?::uuid
                     """,
@@ -350,7 +369,7 @@ public class ListaMesasOperacionService {
         );
 
         if (idPedido == null) {
-            idPedido = insertarPedido(idAtencion, null);
+            idPedido = insertarPedido(idAtencion, null, null);
         }
 
         UUID idDetalle = insertarDetalleItem(idPedido, toOperacionItem(request), null);
@@ -395,7 +414,7 @@ public class ListaMesasOperacionService {
         jdbcTemplate.update(
                 """
                 UPDATE detalle_pedidos
-                SET estado_cocina = ?::estado_cocina
+                SET estado_cocina = ?
                 WHERE id = ?::uuid
                 """,
                 nuevo,
@@ -459,8 +478,8 @@ public class ListaMesasOperacionService {
         jdbcTemplate.update(
                 """
                 UPDATE atenciones
-                SET estado = 'cerrada'::estado_atencion,
-                    estado_pago = 'pagado'::estado_pago,
+                SET estado = 'cerrada',
+                    estado_pago = 'pagado',
                     cierre_en = now()
                 WHERE id = ?::uuid
                 """,
@@ -472,7 +491,7 @@ public class ListaMesasOperacionService {
             jdbcTemplate.update(
                     """
                     UPDATE reservas
-                    SET estado = 'atendida'::estado_reserva,
+                    SET estado = 'atendida',
                         confirmada = true
                     WHERE id = ?::uuid
                     """,
@@ -488,6 +507,76 @@ public class ListaMesasOperacionService {
         result.put("propina", propina);
         result.put("total", total);
         return result;
+    }
+
+    @Transactional
+    public Map<String, Object> cambiarSituacionAtencion(UUID idAtencion, AtencionSituacionRequest request) {
+        if (request == null || request.getEstado() == null || request.getEstado().isBlank()) {
+            throw new OperacionBusinessException("Estado requerido", "VALIDACION_NEGOCIO");
+        }
+
+        String estado = text(request.getEstado());
+        if (!"cancelada".equals(estado)) {
+            throw new OperacionBusinessException("Solo se permite estado cancelada", "VALIDACION_NEGOCIO");
+        }
+
+        Map<String, Object> atencion = jdbcTemplate.query(
+                """
+                SELECT id, id_mesa, estado::text AS estado
+                FROM atenciones
+                WHERE id = ?::uuid
+                FOR UPDATE
+                """,
+                rs -> rs.next() ? Map.of(
+                        "id", rs.getObject("id"),
+                        "idMesa", rs.getObject("id_mesa"),
+                        "estado", rs.getString("estado")
+                ) : null,
+                idAtencion
+        );
+
+        if (atencion == null) {
+            throw new OperacionBusinessException("Atencion no encontrada", "VALIDACION_NEGOCIO");
+        }
+
+        if (!"en_curso".equalsIgnoreCase(text((String) atencion.get("estado")))) {
+            throw new OperacionBusinessException("Atencion no en curso", "VALIDACION_NEGOCIO");
+        }
+
+        Integer items = jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(1)
+                FROM pedidos p
+                INNER JOIN detalle_pedidos dp ON dp.id_pedido = p.id
+                WHERE p.id_atencion = ?::uuid
+                """,
+                Integer.class,
+                idAtencion
+        );
+
+        if (items != null && items > 0) {
+            throw new OperacionBusinessException("No se puede anular una atencion con items", "VALIDACION_NEGOCIO");
+        }
+
+        jdbcTemplate.update(
+                """
+                UPDATE atenciones
+                SET estado = 'cancelada',
+                    cierre_en = now()
+                WHERE id = ?::uuid
+                """,
+                idAtencion
+        );
+
+        UUID idMesa = (UUID) atencion.get("idMesa");
+        return Map.of(
+                "idAtencion", idAtencion,
+                "estado", "cancelada",
+                "mesa", Map.of(
+                        "idMesa", idMesa,
+                        "estadoOperativo", "libre"
+                )
+        );
     }
 
     private Map<String, Object> crearComprobante(UUID idAtencion, String metodoPago, double subtotal, double propina, double total) {
@@ -546,10 +635,10 @@ public class ListaMesasOperacionService {
                     """
                     INSERT INTO atenciones (
                         id_mesa, id_cliente, id_mozo, id_reserva,
-                        estado, estado_pago, apertura_en, observaciones
+                        estado, estado_pago, apertura_en
                     )
                     VALUES (?::uuid, ?::uuid, ?::uuid, ?::uuid,
-                            'en_curso'::estado_atencion, 'pendiente'::estado_pago, now(), ?)
+                            'en_curso', 'pendiente', now())
                     RETURNING id
                     """,
                     Statement.RETURN_GENERATED_KEYS
@@ -558,7 +647,6 @@ public class ListaMesasOperacionService {
             ps.setObject(2, request.getIdCliente());
             ps.setObject(3, request.getIdMozo());
             ps.setObject(4, idReserva);
-            ps.setString(5, trimToNull(request.getNotas()));
             return ps;
         }, keyHolder);
 
@@ -569,19 +657,25 @@ public class ListaMesasOperacionService {
         return uuid;
     }
 
-    private UUID insertarPedido(UUID idAtencion, String notas) {
+    private UUID insertarPedido(UUID idAtencion, String notas, UUID creadoPor) {
+        UUID createdBy = creadoPor != null ? creadoPor : obtenerCreadoPorDesdeAtencion(idAtencion);
+        if (createdBy == null) {
+            throw new OperacionBusinessException("Validacion de negocio", "VALIDACION_NEGOCIO");
+        }
+
         KeyHolder keyHolder = new GeneratedKeyHolder();
         jdbcTemplate.update(connection -> {
             PreparedStatement ps = connection.prepareStatement(
                     """
-                    INSERT INTO pedidos (id_atencion, notas, creado_en)
-                    VALUES (?::uuid, ?, now())
+                    INSERT INTO pedidos (id_atencion, creado_por, notas, creado_en)
+                    VALUES (?::uuid, ?::uuid, ?, now())
                     RETURNING id
                     """,
                     Statement.RETURN_GENERATED_KEYS
             );
             ps.setObject(1, idAtencion);
-            ps.setString(2, trimToNull(notas));
+            ps.setObject(2, createdBy);
+            ps.setString(3, trimToNull(notas));
             return ps;
         }, keyHolder);
 
@@ -590,6 +684,18 @@ public class ListaMesasOperacionService {
             throw new OperacionBusinessException("Validacion de negocio", "VALIDACION_NEGOCIO");
         }
         return uuid;
+    }
+
+    private UUID obtenerCreadoPorDesdeAtencion(UUID idAtencion) {
+        return jdbcTemplate.query(
+                """
+                SELECT a.id_mozo
+                FROM atenciones a
+                WHERE a.id = ?::uuid
+                """,
+                rs -> rs.next() ? (UUID) rs.getObject("id_mozo") : null,
+                idAtencion
+        );
     }
 
     private UUID insertarDetalleItem(UUID idPedido, OperacionItemRequest item, UUID idUsuario) {
@@ -683,7 +789,7 @@ public class ListaMesasOperacionService {
                         precio_unit, descuento, estado_cocina, observaciones, fecha_creacion
                     )
                     VALUES (?::uuid, ?::uuid, ?::uuid, ?,
-                            ?, 0, ?::estado_cocina, ?, now())
+                            ?, 0, ?, ?, now())
                     RETURNING id
                     """,
                     Statement.RETURN_GENERATED_KEYS
@@ -886,8 +992,14 @@ public class ListaMesasOperacionService {
     }
 
     private void validarOcuparRequest(OcuparMesaRequest request) {
-        if (request == null || request.getIdCliente() == null || request.getIdMozo() == null || request.getItems() == null || request.getItems().isEmpty()) {
-            throw new OperacionBusinessException("Validacion de negocio", "VALIDACION_NEGOCIO");
+        if (request == null) {
+            throw new OperacionBusinessException("Body requerido", "VALIDACION_NEGOCIO");
+        }
+        if (request.getIdCliente() == null) {
+            throw new OperacionBusinessException("El idCliente es obligatorio", "VALIDACION_NEGOCIO");
+        }
+        if (request.getIdMozo() == null) {
+            throw new OperacionBusinessException("El idMozo es obligatorio", "VALIDACION_NEGOCIO");
         }
     }
 

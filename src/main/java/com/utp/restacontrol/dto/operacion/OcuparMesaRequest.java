@@ -1,13 +1,18 @@
 package com.utp.restacontrol.dto.operacion;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+
 import java.util.List;
 import java.util.UUID;
 
 public class OcuparMesaRequest {
 
+    @JsonAlias({"id_cliente", "clienteId", "idClienteSeleccionado"})
     private UUID idCliente;
+    @JsonAlias({"id_mozo", "mozoId", "idUsuarioMozo", "id_usuario_mozo", "id_usuario", "idUsuario"})
     private UUID idMozo;
     private String notas;
+    @JsonAlias({"detalle", "detalles"})
     private List<OperacionItemRequest> items;
 
     public UUID getIdCliente() { return idCliente; }

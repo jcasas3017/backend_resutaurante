@@ -33,6 +33,16 @@ public class ClienteCrudService {
         return toDto(requireCliente(id));
     }
 
+    public ClienteDto buscarPorDocumento(String documento) {
+        if (documento == null || documento.isBlank()) {
+            throw new IllegalArgumentException("El documento es obligatorio");
+        }
+        String value = documento.trim();
+        Cliente cliente = clienteRepository.findByDocumento(value)
+                .orElseThrow(() -> new IllegalArgumentException("Cliente no encontrado"));
+        return toDto(cliente);
+    }
+
     public ClienteDto crear(ClienteCreateRequest request) {
         validarCrear(request);
 

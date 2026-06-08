@@ -52,6 +52,22 @@ public class ClienteController {
         ));
     }
 
+    @GetMapping("/buscar-por-documento")
+    public ResponseEntity<?> buscarPorDocumento(@RequestParam String documento) {
+        try {
+            return ResponseEntity.ok(Map.of(
+                    "success", true,
+                    "message", "Cliente obtenido",
+                    "data", clienteCrudService.buscarPorDocumento(documento)
+            ));
+        } catch (IllegalArgumentException ex) {
+            if ("Cliente no encontrado".equals(ex.getMessage())) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error(ex.getMessage()));
+            }
+            return ResponseEntity.badRequest().body(error(ex.getMessage()));
+        }
+    }
+
     @GetMapping("/{id}")
     public ResponseEntity<?> obtener(@PathVariable UUID id) {
         try {

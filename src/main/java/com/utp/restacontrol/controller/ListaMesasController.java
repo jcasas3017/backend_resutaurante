@@ -1,6 +1,7 @@
 package com.utp.restacontrol.controller;
 
 import com.utp.restacontrol.dto.operacion.AgregarItemRequest;
+import com.utp.restacontrol.dto.operacion.AtencionSituacionRequest;
 import com.utp.restacontrol.dto.operacion.CambiarEstadoItemRequest;
 import com.utp.restacontrol.dto.operacion.CobrarAtencionRequest;
 import com.utp.restacontrol.dto.operacion.OcuparMesaRequest;
@@ -20,6 +21,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -128,13 +130,28 @@ public class ListaMesasController {
         ));
     }
 
+    @PatchMapping("/atenciones/{idAtencion}/situacion")
+    public ResponseEntity<?> cambiarSituacionAtencion(
+            @PathVariable UUID idAtencion,
+            @RequestBody AtencionSituacionRequest request
+    ) {
+        var data = service.cambiarSituacionAtencion(idAtencion, request);
+        return ResponseEntity.ok(Map.of(
+                "success", true,
+                "message", "Atencion anulada",
+                "data", data
+        ));
+    }
+
     @org.springframework.web.bind.annotation.ExceptionHandler(OperacionBusinessException.class)
     public ResponseEntity<?> handleBusiness(OperacionBusinessException ex) {
-        return ResponseEntity.badRequest().body(Map.of(
-                "success", false,
-                "message", ex.getMessage(),
-                "code", ex.getCode(),
-                "details", ex.getDetails()
-        ));
+                Map<String, Object> body = new HashMap<>();
+                body.put("success", false);
+                body.put("message", ex.getMessage());
+                body.put("code", ex.getCode());
+                if (ex.getDetails() != null) {
+                        body.put("details", ex.getDetails());
+                }
+                return ResponseEntity.badRequest().body(body);
     }
 }
