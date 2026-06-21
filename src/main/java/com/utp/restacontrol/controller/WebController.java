@@ -9,7 +9,6 @@ import com.utp.restacontrol.service.ClienteService;
 import com.utp.restacontrol.service.PlatoService;
 import com.utp.restacontrol.service.CocinaService;
 
-
 @Controller
 public class WebController {
 
@@ -25,7 +24,7 @@ public class WebController {
         this.clienteService = clienteService;
         this.atencionService = atencionService;
         this.cocinaService = cocinaService;
-}
+    }
 
     @GetMapping({"/", "/login"})
     public String index() {
@@ -60,6 +59,7 @@ public class WebController {
         model.addAttribute("atenciones", atencionService.listarAtenciones());
         return "atenciones";
     }
+
     @GetMapping("/cocina")
     public String cocina(Model model) {
         var items = cocinaService.listarItemsCocina();

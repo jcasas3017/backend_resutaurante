@@ -5,6 +5,7 @@ import com.utp.restacontrol.repository.CocinaRepository;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class CocinaService {
@@ -13,6 +14,10 @@ public class CocinaService {
 
     public CocinaService(CocinaRepository cocinaRepository) {
         this.cocinaRepository = cocinaRepository;
+    }
+
+    public List<Map<String, Object>> listarItemsCocina(String estado, String search) {
+        return cocinaRepository.listarItemsCocina(estado, search);
     }
 
     public List<CocinaItem> listarItemsCocina() {
