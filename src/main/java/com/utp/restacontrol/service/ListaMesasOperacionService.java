@@ -231,6 +231,104 @@ public class ListaMesasOperacionService {
         return construirPedidoActual(idAtencion);
     }
 
+    public Map<String, Object> obtenerDashboardMetrics() {
+        Integer categoriasActivas = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM categorias WHERE activo = true",
+                Integer.class);
+        Integer categoriasTotal = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM categorias",
+                Integer.class);
+
+        Integer platosDisponibles = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM platos WHERE activo = true",
+                Integer.class);
+        Integer platosTotal = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM platos",
+                Integer.class);
+
+        Integer mesasActivas = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM mesas WHERE activa = true",
+                Integer.class);
+        Integer mesasTotal = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM mesas",
+                Integer.class);
+
+        Integer reservasVigentes = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM reservas WHERE estado::text IN ('pendiente', 'confirmada')",
+                Integer.class);
+        Integer reservasConfirmadas = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM reservas WHERE estado::text = 'confirmada'",
+                Integer.class);
+
+        Integer atencionesEnCurso = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM atenciones WHERE estado::text = 'en_curso'",
+                Integer.class);
+        Integer atencionesCerradasHoy = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM atenciones WHERE estado::text = 'cerrada' AND fecha_creacion::date = CURRENT_DATE",
+                Integer.class);
+
+        Integer pedidosTotales = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM pedidos",
+                Integer.class);
+        Integer itemsTotales = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM detalle_pedidos",
+                Integer.class);
+
+        List<Map<String, Object>> reservas = jdbcTemplate.query(
+                """
+                        SELECT c.nombres || ' ' || c.apellidos AS cliente,
+                               m.codigo AS mesa,
+                               to_char(r.fecha_hora, 'DD/MM/YYYY, HH24:MI') AS fecha_hora,
+                               r.cantidad_personas AS personas,
+                               r.estado::text AS estado
+                        FROM reservas r
+                        LEFT JOIN clientes c ON c.id = r.id_cliente
+                        LEFT JOIN mesas m ON m.id = r.id_mesa
+                        WHERE r.estado::text IN ('pendiente', 'confirmada')
+                        ORDER BY r.fecha_hora DESC
+                        LIMIT 5
+                        """,
+                (rs, rowNum) -> Map.of(
+                        "cliente", rs.getString("cliente"),
+                        "mesa", rs.getString("mesa"),
+                        "fechaHora", rs.getString("fecha_hora"),
+                        "personas", rs.getInt("personas"),
+                        "estado", rs.getString("estado")
+                ));
+
+        List<Map<String, Object>> atenciones = jdbcTemplate.query(
+                """
+                        SELECT c.nombres || ' ' || c.apellidos AS cliente,
+                               m.codigo AS mesa,
+                               u.nombres || ' ' || u.apellidos AS mozo,
+                               a.estado::text AS estado,
+                               a.estado_pago::text AS pago
+                        FROM atenciones a
+                        LEFT JOIN clientes c ON c.id = a.id_cliente
+                        LEFT JOIN mesas m ON m.id = a.id_mesa
+                        LEFT JOIN usuarios u ON u.id = a.id_mozo
+                        WHERE a.estado::text = 'en_curso'
+                        ORDER BY a.apertura_en DESC
+                        LIMIT 5
+                        """,
+                (rs, rowNum) -> Map.of(
+                        "cliente", rs.getString("cliente"),
+                        "mesa", rs.getString("mesa"),
+                        "mozo", rs.getString("mozo"),
+                        "estado", rs.getString("estado"),
+                        "pago", rs.getString("pago")
+                ));
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("categorias", Map.of("active", categoriasActivas, "total", categoriasTotal));
+        data.put("platos", Map.of("available", platosDisponibles, "total", platosTotal));
+        data.put("mesas", Map.of("active", mesasActivas, "total", mesasTotal));
+        data.put("reservas", Map.of("active", reservasVigentes, "confirmed", reservasConfirmadas, "rows", reservas));
+        data.put("atenciones", Map.of("inProgress", atencionesEnCurso, "closedToday", atencionesCerradasHoy, "rows", atenciones));
+        data.put("pedidos", Map.of("total", pedidosTotales, "items", itemsTotales));
+        return Map.of("data", data);
+    }
+
     @Transactional
     public Map<String, Object> ocuparMesa(UUID idMesa, UUID idReserva, OcuparMesaRequest request) {
         validarOcuparRequest(request);
@@ -485,52 +583,78 @@ public class ListaMesasOperacionService {
 
         Map<String, Object> atencion = jdbcTemplate.query(
                 """
-                        SELECT id, codigo, id_cliente, id_mesa, id_reserva, estado::text AS estado
-                        FROM atenciones
-                        WHERE id = ?::uuid
+                        SELECT a.id,
+                               a.codigo,
+                               a.id_cliente,
+                               a.id_mesa,
+                               a.id_reserva,
+                               a.id_mozo,
+                               c.nombres AS cliente_nombres,
+                               c.apellidos AS cliente_apellidos,
+                               c.documento AS cliente_documento,
+                               a.estado::text AS estado
+                        FROM atenciones a
+                        INNER JOIN clientes c ON c.id = a.id_cliente
+                        WHERE a.id = ?::uuid
                         FOR UPDATE
                         """,
-                rs -> rs.next() ? Map.of(
-                        "id", rs.getObject("id"),
-                        "codigo", rs.getString("codigo"),
-                        "idCliente", rs.getObject("id_cliente"),
-                        "idMesa", rs.getObject("id_mesa"),
-                        "idReserva", rs.getObject("id_reserva"),
-                        "estado", rs.getString("estado")) : null,
+                rs -> {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                    Map<String, Object> row = new java.util.HashMap<>();
+                    row.put("id", rs.getObject("id"));
+                    row.put("codigo", rs.getString("codigo"));
+                    row.put("idCliente", rs.getObject("id_cliente"));
+                    row.put("idMesa", rs.getObject("id_mesa"));
+                    row.put("idReserva", rs.getObject("id_reserva"));
+                    row.put("idMozo", rs.getObject("id_mozo"));
+                    row.put("clienteNombres", rs.getString("cliente_nombres"));
+                    row.put("clienteApellidos", rs.getString("cliente_apellidos"));
+                    row.put("clienteDocumento", rs.getString("cliente_documento"));
+                    row.put("estado", rs.getString("estado"));
+                    return row;
+                },
                 idAtencion);
 
-        if (atencion == null || !"en_curso".equalsIgnoreCase(text((String) atencion.get("estado")))) {
+        if (atencion == null) {
+            throw new OperacionBusinessException("Atencion no encontrada", "ATENCION_NO_ENCONTRADA");
+        }
+
+        String estadoAtencion = text((String) atencion.get("estado"));
+        if (!"en curso".equals(estadoAtencion) && !"en_curso".equals(estadoAtencion)) {
             throw new OperacionBusinessException("Atencion no en curso", "ATENCION_NO_EN_CURSO");
         }
 
-        Double subtotal = jdbcTemplate.queryForObject(
-                """
-                        SELECT COALESCE(SUM((dp.cantidad * dp.precio_unit) - COALESCE(dp.descuento, 0)), 0)
-                        FROM pedidos p
-                        INNER JOIN detalle_pedidos dp ON dp.id_pedido = p.id
-                        WHERE p.id_atencion = ?::uuid
-                          AND dp.estado_cocina::text <> 'cancelado'
-                        """,
-                Double.class,
-                idAtencion);
+        Double subtotal = request.getSubtotal();
+        if (subtotal == null) {
+            subtotal = jdbcTemplate.queryForObject(
+                    """
+                            SELECT COALESCE(SUM((dp.cantidad * dp.precio_unit) - COALESCE(dp.descuento, 0)), 0)
+                            FROM pedidos p
+                            INNER JOIN detalle_pedidos dp ON dp.id_pedido = p.id
+                            WHERE p.id_atencion = ?::uuid
+                              AND dp.estado_cocina::text <> 'cancelado'
+                            """,
+                    Double.class,
+                    idAtencion);
+        }
 
         double propina = request.getPropina() == null ? 0d : Math.max(request.getPropina(), 0d);
-        double total = (subtotal == null ? 0d : subtotal) + propina;
-
-        Map<String, Object> comprobanteData = null;
-        if (Boolean.TRUE.equals(request.getGenerarComprobante())) {
-            comprobanteData = crearComprobante(idAtencion, request.getMetodoPago(), subtotal == null ? 0d : subtotal,
-                    propina, total);
-        }
+        double total = request.getTotal() == null ? (subtotal == null ? 0d : subtotal) + propina : Math.max(request.getTotal(), 0d);
 
         jdbcTemplate.update(
                 """
                         UPDATE atenciones
-                        SET estado = 'cerrada',
-                            estado_pago = 'pagado',
-                            cierre_en = now()
+                        SET estado = 'Cerrada',
+                            estado_pago = 'Pagado',
+                            cierre_en = now(),
+                            total_pagado = ?,
+                            propina = ?
                         WHERE id = ?::uuid
                         """,
+                total,
+                propina,
                 idAtencion);
 
         UUID idReserva = (UUID) atencion.get("idReserva");
@@ -538,12 +662,25 @@ public class ListaMesasOperacionService {
             jdbcTemplate.update(
                     """
                             UPDATE reservas
-                            SET estado = 'atendida',
+                            SET estado = 'Completada',
                                 confirmada = true
                             WHERE id = ?::uuid
                             """,
                     idReserva);
         }
+
+        Map<String, Object> comprobanteData = null;
+        if (Boolean.TRUE.equals(request.getGenerarComprobante())) {
+            UUID idMozo = (UUID) atencion.get("idMozo");
+            comprobanteData = crearComprobante(idAtencion, request.getMetodoPago(), subtotal == null ? 0d : subtotal,
+                    propina, total, idMozo);
+        }
+
+        String codigoAtencion = (String) atencion.get("codigo");
+        String clienteNombre = buildNombreCompleto(
+                (String) atencion.get("clienteNombres"),
+                (String) atencion.get("clienteApellidos"));
+        String clienteDocumento = (String) atencion.get("clienteDocumento");
 
         Map<String, Object> result = new HashMap<>();
         if (comprobanteData != null) {
@@ -552,6 +689,9 @@ public class ListaMesasOperacionService {
         result.put("subtotal", subtotal == null ? 0d : subtotal);
         result.put("propina", propina);
         result.put("total", total);
+        result.put("codigoAtencion", codigoAtencion);
+        result.put("clienteNombre", clienteNombre);
+        result.put("clienteDocumento", clienteDocumento);
         return result;
     }
 
@@ -583,7 +723,8 @@ public class ListaMesasOperacionService {
             throw new OperacionBusinessException("Atencion no encontrada", "VALIDACION_NEGOCIO");
         }
 
-        if (!"en_curso".equalsIgnoreCase(text((String) atencion.get("estado")))) {
+        String estadoAtencion = text((String) atencion.get("estado"));
+        if (!"en curso".equals(estadoAtencion) && !"en_curso".equals(estadoAtencion)) {
             throw new OperacionBusinessException("Atencion no en curso", "VALIDACION_NEGOCIO");
         }
 
@@ -620,50 +761,65 @@ public class ListaMesasOperacionService {
     }
 
     private Map<String, Object> crearComprobante(UUID idAtencion, String metodoPago, double subtotal, double propina,
-            double total) {
-        String serie = "B001";
-
-        Integer maxCorr = jdbcTemplate.queryForObject(
-                """
-                        SELECT COALESCE(MAX(CAST(c.correlativo AS integer)), 0)
-                        FROM comprobantes c
-                        WHERE c.serie = ?
-                        """,
-                Integer.class,
-                serie);
-
-        String correlativo = String.format(Locale.ROOT, "%08d", (maxCorr == null ? 0 : maxCorr) + 1);
+            double total, UUID idMozo) {
+        String numeroComprobante = "CMP" + System.currentTimeMillis();
 
         KeyHolder keyHolder = new GeneratedKeyHolder();
         jdbcTemplate.update(connection -> {
             PreparedStatement ps = connection.prepareStatement(
                     """
                             INSERT INTO comprobantes (
-                                id_atencion, serie, correlativo, tipo_comprobante,
-                                subtotal, propina, total, metodo_pago, fecha_emision, estado
+                                id_atencion, numero_comprobante, tipo_comprobante,
+                                monto_subtotal, monto_igv, monto_descuento, monto_total,
+                                metodo_pago, estado, emitido_por, fecha_emision
                             )
-                            VALUES (?::uuid, ?, ?, 'boleta', ?, ?, ?, ?, now(), 'emitido')
+                            VALUES (?::uuid, ?, 'Boleta', ?, 0, 0, ?, ?, 'Emitido', ?::uuid, now())
                             RETURNING id
                             """,
                     Statement.RETURN_GENERATED_KEYS);
             ps.setObject(1, idAtencion);
-            ps.setString(2, serie);
-            ps.setString(3, correlativo);
-            ps.setDouble(4, subtotal);
-            ps.setDouble(5, propina);
-            ps.setDouble(6, total);
-            ps.setString(7, metodoPago);
+            ps.setString(2, numeroComprobante);
+            ps.setDouble(3, subtotal);
+            ps.setDouble(4, total);
+            ps.setString(5, metodoPago);
+            ps.setObject(6, idMozo);
             return ps;
         }, keyHolder);
 
-        Object idComprobante = keyHolder.getKeys() != null ? keyHolder.getKeys().get("id") : null;
+        Object rawIdComprobante = null;
+        if (keyHolder.getKeys() != null && keyHolder.getKeys().containsKey("id")) {
+            rawIdComprobante = keyHolder.getKeys().get("id");
+        }
+        if (rawIdComprobante == null) {
+            rawIdComprobante = keyHolder.getKey();
+        }
 
-        return Map.of(
-                "idComprobante", idComprobante,
-                "serie", serie,
-                "correlativo", correlativo,
-                "fechaEmision", LocalDateTime.now(LIMA_ZONE),
-                "metodoPago", metodoPago);
+        UUID idComprobante;
+        if (rawIdComprobante instanceof UUID uuid) {
+            idComprobante = uuid;
+        } else if (rawIdComprobante != null) {
+            try {
+                idComprobante = UUID.fromString(rawIdComprobante.toString());
+            } catch (IllegalArgumentException ex) {
+                throw new OperacionBusinessException("No se pudo convertir el id del comprobante", "ERROR_INTERNO");
+            }
+        } else {
+            throw new OperacionBusinessException("No se pudo obtener el id del comprobante", "ERROR_INTERNO");
+        }
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("idComprobante", idComprobante);
+        response.put("numeroComprobante", numeroComprobante);
+        response.put("fechaEmision", LocalDateTime.now(LIMA_ZONE));
+        response.put("metodoPago", metodoPago);
+        response.put("subtotal", subtotal);
+        response.put("propina", propina);
+        response.put("total", total);
+        return response;
+    }
+
+    private UUID obtenerUsuarioActual() {
+        return null;
     }
 
     private UUID insertarAtencion(UUID idMesa, UUID idReserva, OcuparMesaRequest request) {
@@ -968,6 +1124,15 @@ public class ListaMesasOperacionService {
                 .replace("í", "i")
                 .replace("ó", "o")
                 .replace("ú", "u");
+    }
+
+    private String buildNombreCompleto(String nombres, String apellidos) {
+        String nombre = nombres != null ? nombres.trim() : "";
+        String apellido = apellidos != null ? apellidos.trim() : "";
+        if (nombre.isEmpty() && apellido.isEmpty()) {
+            return "";
+        }
+        return (nombre + " " + apellido).trim();
     }
 
     private String calcularEstadoOperativo(boolean activa, String situacion, boolean ocupada, boolean reservada) {

@@ -2,6 +2,7 @@ package com.utp.restacontrol.controller;
 
 import com.utp.restacontrol.service.AtencionService;
 import com.utp.restacontrol.service.CocinaService;
+import com.utp.restacontrol.service.ListaMesasOperacionService;
 import com.utp.restacontrol.service.OperacionBusinessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -23,12 +24,15 @@ public class ApiController {
 
     private final AtencionService atencionService;
     private final CocinaService cocinaService;
+    private final ListaMesasOperacionService listaMesasOperacionService;
 
     public ApiController(
             AtencionService atencionService,
-            CocinaService cocinaService) {
+            CocinaService cocinaService,
+            ListaMesasOperacionService listaMesasOperacionService) {
         this.atencionService = atencionService;
         this.cocinaService = cocinaService;
+        this.listaMesasOperacionService = listaMesasOperacionService;
     }
 
     @GetMapping("/atenciones")
@@ -42,6 +46,11 @@ public class ApiController {
             @RequestParam(required = false) String search) {
         List<Map<String, Object>> items = cocinaService.listarItemsCocina(estado, search);
         return Map.of("items", items);
+    }
+
+    @GetMapping("/dashboard")
+    public Map<String, Object> dashboard() {
+        return listaMesasOperacionService.obtenerDashboardMetrics();
     }
 
     @ExceptionHandler(OperacionBusinessException.class)
