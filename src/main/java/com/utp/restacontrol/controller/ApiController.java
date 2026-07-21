@@ -53,6 +53,16 @@ public class ApiController {
         return listaMesasOperacionService.obtenerDashboardMetrics();
     }
 
+    @GetMapping("/reportes/ventas")
+    public Map<String, Object> reporteVentas(@RequestParam(defaultValue = "7d") String periodo) {
+        return listaMesasOperacionService.obtenerReporteVentas(periodo);
+    }
+
+    @GetMapping("/reportes/reservas")
+    public Map<String, Object> reporteReservas(@RequestParam(defaultValue = "7d") String periodo) {
+        return listaMesasOperacionService.obtenerReporteReservas(periodo);
+    }
+
     @ExceptionHandler(OperacionBusinessException.class)
     public ResponseEntity<?> handleBusiness(OperacionBusinessException ex) {
         Map<String, Object> body = new HashMap<>();

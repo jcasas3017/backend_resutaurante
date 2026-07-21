@@ -18,8 +18,10 @@ import java.sql.Savepoint;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -229,6 +231,195 @@ public class ListaMesasOperacionService {
 
     public Map<String, Object> obtenerPedidoActual(UUID idAtencion) {
         return construirPedidoActual(idAtencion);
+    }
+
+    public Map<String, Object> obtenerReporteVentas(String periodo) {
+        String rango = periodo == null ? "7d" : periodo.trim().toLowerCase(Locale.ROOT);
+        int dias = switch (rango) {
+            case "1d" -> 1;
+            case "7d" -> 7;
+            case "30d" -> 30;
+            default -> 7;
+        };
+
+        LocalDateTime fin = LocalDateTime.now(LIMA_ZONE).withHour(23).withMinute(59).withSecond(59).withNano(0);
+        LocalDateTime inicio = fin.minusDays(dias - 1).withHour(0).withMinute(0).withSecond(0).withNano(0);
+
+        List<Map<String, Object>> history = jdbcTemplate.query(
+                """
+                        SELECT DATE(a.cierre_en AT TIME ZONE 'America/Lima')::date AS fecha,
+                               COUNT(*) FILTER (WHERE a.estado::text = 'Cerrada' OR a.estado::text = 'cerrada') AS atenciones,
+                               COALESCE(SUM(COALESCE(a.total_pagado, 0)), 0) AS ventas,
+                               COALESCE(AVG(COALESCE(a.total_pagado, 0)), 0) AS ticket_promedio
+                        FROM atenciones a
+                        WHERE a.cierre_en IS NOT NULL
+                          AND a.cierre_en >= ?::timestamp
+                          AND a.cierre_en <= ?::timestamp
+                        GROUP BY DATE(a.cierre_en AT TIME ZONE 'America/Lima')
+                        ORDER BY fecha ASC
+                        """,
+                (rs, rowNum) -> {
+                    double ventas = rs.getDouble("ventas");
+                    int atenciones = rs.getInt("atenciones");
+                    double ticketPromedio = atenciones > 0 ? ventas / atenciones : 0d;
+                    return Map.<String, Object>of(
+                            "label", rs.getDate("fecha").toLocalDate().getDayOfWeek().name().substring(0, 3),
+                            "ventas", roundCurrency(ventas),
+                            "ocupacion", 0,
+                            "atenciones", atenciones,
+                            "ticketPromedio", roundCurrency(ticketPromedio));
+                },
+                Timestamp.valueOf(inicio),
+                Timestamp.valueOf(fin));
+
+        double ventasDia = history.stream().mapToDouble(item -> ((Number) item.get("ventas")).doubleValue()).sum();
+        int atencionesDia = history.stream().mapToInt(item -> ((Number) item.get("atenciones")).intValue()).sum();
+        double ticketPromedio = atencionesDia > 0 ? ventasDia / atencionesDia : 0d;
+
+        Map<String, Object> mejorDia = history.stream()
+                .max((left, right) -> Double.compare(((Number) left.get("ventas")).doubleValue(), ((Number) right.get("ventas")).doubleValue()))
+                .orElse(Map.of("label", "Sin datos", "ventas", 0, "ocupacion", 0));
+
+        int ocupacionMedia = history.isEmpty() ? 0 : (int) Math.round(
+                history.stream()
+                        .mapToDouble(item -> ((Number) item.get("ocupacion")).doubleValue())
+                        .average()
+                        .orElse(0d));
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("ventasDia", roundCurrency(ventasDia));
+        data.put("ticketPromedio", roundCurrency(ticketPromedio));
+        data.put("ocupacionMedia", ocupacionMedia);
+        data.put("mejorDia", Map.of(
+                "label", mejorDia.getOrDefault("label", "Sin datos"),
+                "ventas", roundCurrency(((Number) mejorDia.getOrDefault("ventas", 0)).doubleValue()),
+                "ocupacion", mejorDia.getOrDefault("ocupacion", 0)));
+        data.put("history", history);
+
+        return Map.of("success", true, "data", data);
+    }
+
+    public Map<String, Object> obtenerReporteReservas(String periodo) {
+        String rango = periodo == null ? "7d" : periodo.trim().toLowerCase(Locale.ROOT);
+        int dias = switch (rango) {
+            case "1d" -> 1;
+            case "7d" -> 7;
+            case "30d" -> 30;
+            default -> 7;
+        };
+
+        LocalDateTime fin = LocalDateTime.now(LIMA_ZONE).withHour(23).withMinute(59).withSecond(59).withNano(0);
+        LocalDateTime inicio = fin.minusDays(dias - 1).withHour(0).withMinute(0).withSecond(0).withNano(0);
+
+        Map<String, Object> totales = jdbcTemplate.query(
+                """
+                        SELECT COUNT(*) AS total_reservas,
+                               COUNT(*) FILTER (WHERE LOWER(COALESCE(estado::text, '')) = 'confirmada') AS confirmadas,
+                               COUNT(*) FILTER (WHERE LOWER(COALESCE(estado::text, '')) = 'pendiente') AS pendientes,
+                               COUNT(*) FILTER (WHERE LOWER(COALESCE(estado::text, '')) = 'cancelada') AS canceladas,
+                               COUNT(*) FILTER (WHERE LOWER(COALESCE(estado::text, '')) = 'atendida') AS atendidas
+                        FROM reservas
+                        WHERE fecha_hora >= ?::timestamp
+                          AND fecha_hora <= ?::timestamp
+                        """,
+                rs -> {
+                    if (!rs.next()) {
+                        return Map.of(
+                                "totalReservas", 0,
+                                "confirmadas", 0,
+                                "pendientes", 0,
+                                "canceladas", 0,
+                                "atencionesEnCurso", 0,
+                                "avgTiempoMin", 0);
+                    }
+                    return Map.of(
+                            "totalReservas", rs.getInt("total_reservas"),
+                            "confirmadas", rs.getInt("confirmadas"),
+                            "pendientes", rs.getInt("pendientes"),
+                            "canceladas", rs.getInt("canceladas"),
+                            "atencionesEnCurso", 0,
+                            "avgTiempoMin", 0);
+                },
+                Timestamp.valueOf(inicio),
+                Timestamp.valueOf(fin));
+
+        Integer atencionesEnCurso = jdbcTemplate.queryForObject(
+                """
+                        SELECT COUNT(1)
+                        FROM atenciones
+                        WHERE LOWER(COALESCE(estado::text, '')) IN ('en_curso', 'en curso')
+                        """,
+                Integer.class);
+
+        Double avgTiempoMin = jdbcTemplate.queryForObject(
+                """
+                        SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (cierre_en - apertura_en)) / 60), 0)
+                        FROM atenciones
+                        WHERE cierre_en IS NOT NULL
+                          AND apertura_en IS NOT NULL
+                        """,
+                Double.class);
+
+        List<Map<String, Object>> history = new ArrayList<>();
+        LocalDate cursor = inicio.toLocalDate();
+        LocalDate endDate = fin.toLocalDate();
+        while (!cursor.isAfter(endDate)) {
+            LocalDateTime dayStart = cursor.atStartOfDay();
+            LocalDateTime dayEnd = cursor.plusDays(1).atStartOfDay().minusNanos(1);
+            Map<String, Object> dayTotals = jdbcTemplate.query(
+                    """
+                            SELECT COUNT(*) FILTER (WHERE LOWER(COALESCE(estado::text, '')) = 'confirmada') AS confirmadas,
+                                   COUNT(*) FILTER (WHERE LOWER(COALESCE(estado::text, '')) = 'pendiente') AS pendientes,
+                                   COUNT(*) FILTER (WHERE LOWER(COALESCE(estado::text, '')) = 'cancelada') AS canceladas,
+                                   COUNT(*) FILTER (WHERE LOWER(COALESCE(estado::text, '')) = 'atendida') AS atendidas
+                            FROM reservas
+                            WHERE fecha_hora >= ?::timestamp
+                              AND fecha_hora < ?::timestamp
+                            """,
+                    rs -> {
+                        if (!rs.next()) {
+                            return Map.of("confirmadas", 0, "pendientes", 0, "canceladas", 0, "atendidas", 0);
+                        }
+                        return Map.of(
+                                "confirmadas", rs.getInt("confirmadas"),
+                                "pendientes", rs.getInt("pendientes"),
+                                "canceladas", rs.getInt("canceladas"),
+                                "atendidas", rs.getInt("atendidas"));
+                    },
+                    Timestamp.valueOf(dayStart),
+                    Timestamp.valueOf(dayEnd));
+
+            Integer atenciones = jdbcTemplate.queryForObject(
+                    """
+                            SELECT COUNT(1)
+                            FROM atenciones
+                            WHERE apertura_en >= ?::timestamp
+                              AND apertura_en < ?::timestamp
+                            """,
+                    Integer.class,
+                    Timestamp.valueOf(dayStart),
+                    Timestamp.valueOf(dayEnd));
+
+            Map<String, Object> item = new HashMap<>();
+            item.put("label", cursor.getDayOfWeek().name().substring(0, 3) + " " + cursor.getDayOfMonth());
+            item.put("confirmadas", dayTotals.get("confirmadas"));
+            item.put("pendientes", dayTotals.get("pendientes"));
+            item.put("canceladas", dayTotals.get("canceladas"));
+            item.put("atenciones", atenciones == null ? 0 : atenciones);
+            history.add(item);
+            cursor = cursor.plusDays(1);
+        }
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("totales", Map.of(
+                "totalReservas", totales.get("totalReservas"),
+                "confirmadas", totales.get("confirmadas"),
+                "pendientes", totales.get("pendientes"),
+                "canceladas", totales.get("canceladas"),
+                "atencionesEnCurso", atencionesEnCurso == null ? 0 : atencionesEnCurso,
+                "avgTiempoMin", roundCurrency(avgTiempoMin == null ? 0d : avgTiempoMin)));
+        data.put("history", history);
+        return Map.of("success", true, "data", data);
     }
 
     public Map<String, Object> obtenerDashboardMetrics() {
@@ -758,6 +949,10 @@ public class ListaMesasOperacionService {
                 "mesa", Map.of(
                         "idMesa", idMesa,
                         "estadoOperativo", "libre"));
+    }
+
+    private double roundCurrency(double value) {
+        return Math.round(value * 100.0) / 100.0;
     }
 
     private Map<String, Object> crearComprobante(UUID idAtencion, String metodoPago, double subtotal, double propina,
