@@ -21,8 +21,10 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -32,6 +34,7 @@ import java.util.UUID;
 public class ListaMesasOperacionService {
 
     private static final ZoneId LIMA_ZONE = ZoneId.of("America/Lima");
+        private static final DateTimeFormatter REPORT_LABEL_FORMATTER = DateTimeFormatter.ofPattern("dd/MM");
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -421,6 +424,333 @@ public class ListaMesasOperacionService {
         data.put("history", history);
         return Map.of("success", true, "data", data);
     }
+
+        public Map<String, Object> obtenerReportePlatosConsumidos(LocalDate fechaInicio, LocalDate fechaFin) {
+                DateRange range = resolveDateRange(fechaInicio, fechaFin);
+
+                List<Map<String, Object>> rawItems = jdbcTemplate.query(
+                                """
+                                                SELECT dp.id_plato AS id_plato,
+                                                           COALESCE(pl.nombre, 'Plato') AS nombre,
+                                                           COALESCE(c.nombre, 'Sin categoria') AS categoria,
+                                                           COALESCE(SUM(dp.cantidad), 0) AS cantidad,
+                                                           COALESCE(SUM((dp.cantidad * dp.precio_unit) - COALESCE(dp.descuento, 0)), 0) AS monto
+                                                FROM atenciones a
+                                                INNER JOIN pedidos p ON p.id_atencion = a.id
+                                                INNER JOIN detalle_pedidos dp ON dp.id_pedido = p.id
+                                                LEFT JOIN platos pl ON pl.id = dp.id_plato
+                                                LEFT JOIN categorias c ON c.id = pl.id_categoria
+                                                WHERE a.cierre_en IS NOT NULL
+                                                  AND a.cierre_en >= ?::timestamp
+                                                  AND a.cierre_en <= ?::timestamp
+                                                  AND LOWER(COALESCE(a.estado::text, '')) = 'cerrada'
+                                                  AND dp.id_plato IS NOT NULL
+                                                  AND LOWER(COALESCE(dp.estado_cocina::text, '')) <> 'cancelado'
+                                                GROUP BY dp.id_plato, pl.nombre, c.nombre
+                                                ORDER BY cantidad DESC, monto DESC, nombre ASC
+                                                """,
+                                (rs, rowNum) -> {
+                                        Map<String, Object> item = new HashMap<>();
+                                        item.put("rank", rowNum + 1);
+                                        item.put("idPlato", rs.getObject("id_plato"));
+                                        item.put("nombre", rs.getString("nombre"));
+                                        item.put("categoria", rs.getString("categoria"));
+                                        item.put("cantidad", rs.getInt("cantidad"));
+                                        item.put("monto", roundCurrency(rs.getDouble("monto")));
+                                        return item;
+                                },
+                                Timestamp.valueOf(range.startDateTime()),
+                                Timestamp.valueOf(range.endDateTime()));
+
+                double totalPorciones = rawItems.stream()
+                                .mapToDouble(item -> ((Number) item.get("cantidad")).doubleValue())
+                                .sum();
+                double totalVentasPlatos = rawItems.stream()
+                                .mapToDouble(item -> ((Number) item.get("monto")).doubleValue())
+                                .sum();
+
+                List<Map<String, Object>> items = new ArrayList<>();
+                for (Map<String, Object> item : rawItems) {
+                        Map<String, Object> mapped = new HashMap<>(item);
+                        double cantidad = ((Number) item.get("cantidad")).doubleValue();
+                        mapped.put("participacionPct", roundCurrency(totalPorciones > 0 ? (cantidad * 100d / totalPorciones) : 0d));
+                        items.add(mapped);
+                }
+
+                Map<String, Object> platoTop = new HashMap<>();
+                if (!items.isEmpty()) {
+                        Map<String, Object> top = items.get(0);
+                        platoTop.put("idPlato", top.get("idPlato"));
+                        platoTop.put("nombre", top.get("nombre"));
+                        platoTop.put("categoria", top.get("categoria"));
+                        platoTop.put("cantidad", top.get("cantidad"));
+                        platoTop.put("monto", top.get("monto"));
+                } else {
+                        platoTop.put("idPlato", null);
+                        platoTop.put("nombre", "Sin datos");
+                        platoTop.put("categoria", "Sin categoria");
+                        platoTop.put("cantidad", 0);
+                        platoTop.put("monto", 0d);
+                }
+
+                List<Map<String, Object>> trendRows = jdbcTemplate.query(
+                                """
+                                                SELECT DATE(a.cierre_en AT TIME ZONE 'America/Lima')::date AS fecha,
+                                                           COALESCE(SUM(dp.cantidad), 0) AS cantidad,
+                                                           COALESCE(SUM((dp.cantidad * dp.precio_unit) - COALESCE(dp.descuento, 0)), 0) AS monto
+                                                FROM atenciones a
+                                                INNER JOIN pedidos p ON p.id_atencion = a.id
+                                                INNER JOIN detalle_pedidos dp ON dp.id_pedido = p.id
+                                                WHERE a.cierre_en IS NOT NULL
+                                                  AND a.cierre_en >= ?::timestamp
+                                                  AND a.cierre_en <= ?::timestamp
+                                                  AND LOWER(COALESCE(a.estado::text, '')) = 'cerrada'
+                                                  AND dp.id_plato IS NOT NULL
+                                                  AND LOWER(COALESCE(dp.estado_cocina::text, '')) <> 'cancelado'
+                                                GROUP BY DATE(a.cierre_en AT TIME ZONE 'America/Lima')
+                                                ORDER BY fecha ASC
+                                                """,
+                                (rs, rowNum) -> {
+                                        Map<String, Object> item = new HashMap<>();
+                                        LocalDate fecha = rs.getDate("fecha").toLocalDate();
+                                        item.put("fecha", fecha);
+                                        item.put("cantidad", rs.getInt("cantidad"));
+                                        item.put("monto", roundCurrency(rs.getDouble("monto")));
+                                        return item;
+                                },
+                                Timestamp.valueOf(range.startDateTime()),
+                                Timestamp.valueOf(range.endDateTime()));
+
+                Map<LocalDate, Map<String, Object>> trendMap = new LinkedHashMap<>();
+                LocalDate cursor = range.startDate();
+                while (!cursor.isAfter(range.endDate())) {
+                        Map<String, Object> day = new HashMap<>();
+                        day.put("fecha", cursor.toString());
+                        day.put("label", cursor.format(REPORT_LABEL_FORMATTER));
+                        day.put("cantidad", 0);
+                        day.put("monto", 0d);
+                        trendMap.put(cursor, day);
+                        cursor = cursor.plusDays(1);
+                }
+
+                for (Map<String, Object> row : trendRows) {
+                        LocalDate fecha = (LocalDate) row.get("fecha");
+                        Map<String, Object> day = trendMap.get(fecha);
+                        if (day == null) {
+                                continue;
+                        }
+                        day.put("cantidad", row.get("cantidad"));
+                        day.put("monto", row.get("monto"));
+                }
+
+                Map<String, Object> resumen = new HashMap<>();
+                resumen.put("totalPorciones", (int) Math.round(totalPorciones));
+                resumen.put("totalVentasPlatos", roundCurrency(totalVentasPlatos));
+                resumen.put("platoTop", platoTop);
+
+                Map<String, Object> data = new HashMap<>();
+                data.put("resumen", resumen);
+                data.put("items", items);
+                data.put("trend", new ArrayList<>(trendMap.values()));
+                return Map.of("success", true, "data", data);
+        }
+
+        public Map<String, Object> obtenerReporteCaja(LocalDate fechaInicio, LocalDate fechaFin) {
+                DateRange range = resolveDateRange(fechaInicio, fechaFin);
+
+                Map<String, Object> totales = jdbcTemplate.query(
+                                """
+                                                WITH atenciones_cerradas AS (
+                                                        SELECT a.id,
+                                                                   COALESCE(a.propina, 0) AS propina
+                                                        FROM atenciones a
+                                                        WHERE a.cierre_en IS NOT NULL
+                                                          AND a.cierre_en >= ?::timestamp
+                                                          AND a.cierre_en <= ?::timestamp
+                                                          AND LOWER(COALESCE(a.estado::text, '')) = 'cerrada'
+                                                ),
+                                                items_por_atencion AS (
+                                                        SELECT p.id_atencion,
+                                                                   COALESCE(SUM(dp.cantidad * dp.precio_unit), 0) AS bruto,
+                                                                   COALESCE(SUM(COALESCE(dp.descuento, 0)), 0) AS descuentos
+                                                        FROM pedidos p
+                                                        INNER JOIN detalle_pedidos dp ON dp.id_pedido = p.id
+                                                        WHERE LOWER(COALESCE(dp.estado_cocina::text, '')) <> 'cancelado'
+                                                        GROUP BY p.id_atencion
+                                                )
+                                                SELECT COALESCE(SUM(COALESCE(i.bruto, 0)), 0) AS bruto,
+                                                           COALESCE(SUM(COALESCE(i.descuentos, 0)), 0) AS descuentos,
+                                                           COALESCE(SUM(ac.propina), 0) AS propinas,
+                                                           COUNT(*) AS tickets
+                                                FROM atenciones_cerradas ac
+                                                LEFT JOIN items_por_atencion i ON i.id_atencion = ac.id
+                                                """,
+                                rs -> {
+                                        if (!rs.next()) {
+                                                return Map.of("bruto", 0d, "descuentos", 0d, "propinas", 0d, "tickets", 0);
+                                        }
+                                        Map<String, Object> data = new HashMap<>();
+                                        data.put("bruto", roundCurrency(rs.getDouble("bruto")));
+                                        data.put("descuentos", roundCurrency(rs.getDouble("descuentos")));
+                                        data.put("propinas", roundCurrency(rs.getDouble("propinas")));
+                                        data.put("tickets", rs.getInt("tickets"));
+                                        return data;
+                                },
+                                Timestamp.valueOf(range.startDateTime()),
+                                Timestamp.valueOf(range.endDateTime()));
+
+                int anulados = jdbcTemplate.queryForObject(
+                                """
+                                                SELECT COUNT(1)
+                                                FROM atenciones a
+                                                WHERE a.cierre_en IS NOT NULL
+                                                  AND a.cierre_en >= ?::timestamp
+                                                  AND a.cierre_en <= ?::timestamp
+                                                  AND LOWER(COALESCE(a.estado::text, '')) = 'cancelada'
+                                                """,
+                                Integer.class,
+                                Timestamp.valueOf(range.startDateTime()),
+                                Timestamp.valueOf(range.endDateTime()));
+
+                double ingresosBrutos = ((Number) totales.get("bruto")).doubleValue();
+                double descuentos = ((Number) totales.get("descuentos")).doubleValue();
+                double propinas = ((Number) totales.get("propinas")).doubleValue();
+                int tickets = ((Number) totales.get("tickets")).intValue();
+                double netoVentas = roundCurrency(ingresosBrutos - descuentos);
+                double montoCaja = roundCurrency(netoVentas + propinas);
+                double ticketPromedio = roundCurrency(tickets > 0 ? netoVentas / tickets : 0d);
+
+                List<Map<String, Object>> metodosPagoRaw = jdbcTemplate.query(
+                                """
+                                                SELECT COALESCE(NULLIF(TRIM(c.metodo_pago), ''), 'Sin definir') AS metodo,
+                                                           COALESCE(SUM(COALESCE(c.monto_total, 0)), 0) AS monto,
+                                                           COUNT(*) AS tickets
+                                                FROM comprobantes c
+                                                WHERE c.fecha_emision IS NOT NULL
+                                                  AND c.fecha_emision >= ?::timestamp
+                                                  AND c.fecha_emision <= ?::timestamp
+                                                  AND LOWER(COALESCE(c.estado::text, '')) NOT IN ('anulado', 'cancelado')
+                                                GROUP BY COALESCE(NULLIF(TRIM(c.metodo_pago), ''), 'Sin definir')
+                                                ORDER BY monto DESC, metodo ASC
+                                                """,
+                                (rs, rowNum) -> {
+                                        Map<String, Object> method = new HashMap<>();
+                                        method.put("metodo", rs.getString("metodo"));
+                                        method.put("monto", roundCurrency(rs.getDouble("monto")));
+                                        method.put("tickets", rs.getInt("tickets"));
+                                        return method;
+                                },
+                                Timestamp.valueOf(range.startDateTime()),
+                                Timestamp.valueOf(range.endDateTime()));
+
+                double totalMetodos = metodosPagoRaw.stream()
+                                .mapToDouble(item -> ((Number) item.get("monto")).doubleValue())
+                                .sum();
+
+                List<Map<String, Object>> metodosPago = new ArrayList<>();
+                for (Map<String, Object> method : metodosPagoRaw) {
+                        Map<String, Object> mapped = new HashMap<>(method);
+                        double monto = ((Number) method.get("monto")).doubleValue();
+                        mapped.put("porcentaje", roundCurrency(totalMetodos > 0 ? (monto * 100d / totalMetodos) : 0d));
+                        metodosPago.add(mapped);
+                }
+
+                List<Map<String, Object>> historyRows = jdbcTemplate.query(
+                                """
+                                                WITH atenciones_cerradas AS (
+                                                        SELECT a.id,
+                                                                   DATE(a.cierre_en AT TIME ZONE 'America/Lima')::date AS fecha,
+                                                                   COALESCE(a.propina, 0) AS propina
+                                                        FROM atenciones a
+                                                        WHERE a.cierre_en IS NOT NULL
+                                                          AND a.cierre_en >= ?::timestamp
+                                                          AND a.cierre_en <= ?::timestamp
+                                                          AND LOWER(COALESCE(a.estado::text, '')) = 'cerrada'
+                                                ),
+                                                items_por_atencion AS (
+                                                        SELECT p.id_atencion,
+                                                                   COALESCE(SUM(dp.cantidad * dp.precio_unit), 0) AS bruto,
+                                                                   COALESCE(SUM(COALESCE(dp.descuento, 0)), 0) AS descuentos
+                                                        FROM pedidos p
+                                                        INNER JOIN detalle_pedidos dp ON dp.id_pedido = p.id
+                                                        WHERE LOWER(COALESCE(dp.estado_cocina::text, '')) <> 'cancelado'
+                                                        GROUP BY p.id_atencion
+                                                )
+                                                SELECT ac.fecha,
+                                                           COALESCE(SUM(COALESCE(i.bruto, 0)), 0) AS bruto,
+                                                           COALESCE(SUM(COALESCE(i.descuentos, 0)), 0) AS descuentos,
+                                                           COALESCE(SUM(ac.propina), 0) AS propinas,
+                                                           COUNT(*) AS tickets
+                                                FROM atenciones_cerradas ac
+                                                LEFT JOIN items_por_atencion i ON i.id_atencion = ac.id
+                                                GROUP BY ac.fecha
+                                                ORDER BY ac.fecha ASC
+                                                """,
+                                (rs, rowNum) -> {
+                                        Map<String, Object> day = new HashMap<>();
+                                        day.put("fecha", rs.getDate("fecha").toLocalDate());
+                                        day.put("bruto", roundCurrency(rs.getDouble("bruto")));
+                                        day.put("descuentos", roundCurrency(rs.getDouble("descuentos")));
+                                        day.put("propinas", roundCurrency(rs.getDouble("propinas")));
+                                        day.put("tickets", rs.getInt("tickets"));
+                                        return day;
+                                },
+                                Timestamp.valueOf(range.startDateTime()),
+                                Timestamp.valueOf(range.endDateTime()));
+
+                Map<LocalDate, Map<String, Object>> historyMap = new LinkedHashMap<>();
+                LocalDate cursor = range.startDate();
+                while (!cursor.isAfter(range.endDate())) {
+                        Map<String, Object> day = new HashMap<>();
+                        day.put("fecha", cursor.toString());
+                        day.put("label", cursor.format(REPORT_LABEL_FORMATTER));
+                        day.put("bruto", 0d);
+                        day.put("descuentos", 0d);
+                        day.put("propinas", 0d);
+                        day.put("neto", 0d);
+                        day.put("caja", 0d);
+                        day.put("tickets", 0);
+                        historyMap.put(cursor, day);
+                        cursor = cursor.plusDays(1);
+                }
+
+                for (Map<String, Object> row : historyRows) {
+                        LocalDate fecha = (LocalDate) row.get("fecha");
+                        Map<String, Object> day = historyMap.get(fecha);
+                        if (day == null) {
+                                continue;
+                        }
+
+                        double bruto = ((Number) row.get("bruto")).doubleValue();
+                        double dayDescuentos = ((Number) row.get("descuentos")).doubleValue();
+                        double dayPropinas = ((Number) row.get("propinas")).doubleValue();
+                        double dayNeto = roundCurrency(bruto - dayDescuentos);
+                        double dayCaja = roundCurrency(dayNeto + dayPropinas);
+
+                        day.put("bruto", roundCurrency(bruto));
+                        day.put("descuentos", roundCurrency(dayDescuentos));
+                        day.put("propinas", roundCurrency(dayPropinas));
+                        day.put("neto", dayNeto);
+                        day.put("caja", dayCaja);
+                        day.put("tickets", row.get("tickets"));
+                }
+
+                Map<String, Object> resumen = new HashMap<>();
+                resumen.put("ingresosBrutos", roundCurrency(ingresosBrutos));
+                resumen.put("descuentos", roundCurrency(descuentos));
+                resumen.put("propinas", roundCurrency(propinas));
+                resumen.put("netoVentas", netoVentas);
+                resumen.put("montoCaja", montoCaja);
+                resumen.put("tickets", tickets);
+                resumen.put("ticketPromedio", ticketPromedio);
+                resumen.put("anulados", anulados);
+
+                Map<String, Object> data = new HashMap<>();
+                data.put("resumen", resumen);
+                data.put("metodosPago", metodosPago);
+                data.put("history", new ArrayList<>(historyMap.values()));
+                return Map.of("success", true, "data", data);
+        }
 
     public Map<String, Object> obtenerDashboardMetrics() {
         Integer categoriasActivas = jdbcTemplate.queryForObject(
@@ -955,6 +1285,34 @@ public class ListaMesasOperacionService {
         return Math.round(value * 100.0) / 100.0;
     }
 
+        private DateRange resolveDateRange(LocalDate fechaInicio, LocalDate fechaFin) {
+                LocalDate start = fechaInicio;
+                LocalDate end = fechaFin;
+
+                if (start == null && end == null) {
+                        end = LocalDate.now(LIMA_ZONE);
+                        start = end.minusDays(6);
+                } else if (start == null) {
+                        start = end;
+                } else if (end == null) {
+                        end = start;
+                }
+
+                if (start.isAfter(end)) {
+                        LocalDate swap = start;
+                        start = end;
+                        end = swap;
+                }
+
+                LocalDateTime startDateTime = start.atStartOfDay();
+                LocalDateTime endDateTime = end.atTime(23, 59, 59);
+                return new DateRange(start, end, startDateTime, endDateTime);
+        }
+
+        private record DateRange(LocalDate startDate, LocalDate endDate, LocalDateTime startDateTime,
+                        LocalDateTime endDateTime) {
+        }
+
     private Map<String, Object> crearComprobante(UUID idAtencion, String metodoPago, double subtotal, double propina,
             double total, UUID idMozo) {
         String numeroComprobante = "CMP" + System.currentTimeMillis();
@@ -1011,10 +1369,6 @@ public class ListaMesasOperacionService {
         response.put("propina", propina);
         response.put("total", total);
         return response;
-    }
-
-    private UUID obtenerUsuarioActual() {
-        return null;
     }
 
     private UUID insertarAtencion(UUID idMesa, UUID idReserva, OcuparMesaRequest request) {

@@ -4,7 +4,7 @@ import com.utp.restacontrol.service.AtencionService;
 import com.utp.restacontrol.service.CocinaService;
 import com.utp.restacontrol.service.ListaMesasOperacionService;
 import com.utp.restacontrol.service.OperacionBusinessException;
-import org.springframework.http.HttpStatus;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -13,13 +13,17 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 @RestController
 @RequestMapping("/api")
-@CrossOrigin(origins = "*")
+@CrossOrigin(
+    origins = "http://localhost:5500",
+    allowCredentials = "true"
+)
 public class ApiController {
 
     private final AtencionService atencionService;
@@ -61,6 +65,20 @@ public class ApiController {
     @GetMapping("/reportes/reservas")
     public Map<String, Object> reporteReservas(@RequestParam(defaultValue = "7d") String periodo) {
         return listaMesasOperacionService.obtenerReporteReservas(periodo);
+    }
+
+    @GetMapping("/reportes/platos-consumidos")
+    public Map<String, Object> reportePlatosConsumidos(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fechaInicio,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fechaFin) {
+        return listaMesasOperacionService.obtenerReportePlatosConsumidos(fechaInicio, fechaFin);
+    }
+
+    @GetMapping("/reportes/caja")
+    public Map<String, Object> reporteCaja(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fechaInicio,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fechaFin) {
+        return listaMesasOperacionService.obtenerReporteCaja(fechaInicio, fechaFin);
     }
 
     @ExceptionHandler(OperacionBusinessException.class)
